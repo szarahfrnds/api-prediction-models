@@ -14,7 +14,7 @@ schema_view = get_schema_view(
       default_version='v1',
       description="Documentação da sua API Django.",
       terms_of_service="https://www.google.com/policies/terms/",
-      contact=openapi.Contact(email="seu-email@exemplo.com"), # Mude seu email aqui
+      contact=openapi.Contact(email="saraoliveirafernandes3@gmail.com"), 
       license=openapi.License(name="BSD License"),
    ),
    public=True,
