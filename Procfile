@@ -1,0 +1,1 @@
+web: gunicorn occupancy_api.wsgi –log-file -
