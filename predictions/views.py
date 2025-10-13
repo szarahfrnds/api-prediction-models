@@ -4,6 +4,8 @@ from datetime import datetime
 from django.utils import timezone
 from .serializers import PredictionSerializer 
 from .models import Forecast, Prediction
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
 
 class ForecastPredictionsView(APIView):
     def get(self, request, forecast_id):
@@ -45,6 +47,19 @@ class PredictionListView(APIView):
     """
     Retorna uma lista de previsões, opcionalmente filtrada por uma data específica.
     """
+    
+    # É ESTE BLOCO QUE VOCÊ PRECISA ADICIONAR
+    @swagger_auto_schema(
+        manual_parameters=[
+            openapi.Parameter(
+                'date', 
+                openapi.IN_QUERY, 
+                description="Filtra as previsões pela data. Use o formato AAAA-MM-DD.",
+                type=openapi.TYPE_STRING
+            )
+        ]
+    )
+    # O RESTANTE DA SUA FUNÇÃO PERMANECE EXATAMENTE IGUAL
     def get(self, request):
         # Pega o parâmetro 'date' da URL (ex: /api/predictions/?date=2025-10-13)
         date_param = request.query_params.get('date', None)
@@ -63,4 +78,4 @@ class PredictionListView(APIView):
 
         # Usa o serializer para converter os dados para JSON
         serializer = PredictionSerializer(queryset, many=True)
-        return Response(serializer.data)   
+        return Response(serializer.data)
