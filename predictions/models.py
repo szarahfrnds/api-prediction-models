@@ -1,5 +1,6 @@
-from django.db import models
+# predictions/models.py
 
+from django.db import models
 
 class Forecast(models.Model):
     name = models.CharField(max_length=100, unique=True)
@@ -8,16 +9,15 @@ class Forecast(models.Model):
     def __str__(self):
         return self.name
 
-
 class PredictionModel(models.Model):
     forecast = models.ForeignKey(
         Forecast, on_delete=models.CASCADE, related_name="models"
     )
-    name = models.CharField(max_length=100) 
-    path = models.CharField(max_length=255) 
-    granularity = models.CharField(max_length=10, default="D")  
-    exog_columns = models.JSONField(blank=True, null=True)  
-    exog_rules = models.JSONField(blank=True, null=True)  
+    name = models.CharField(max_length=100)
+    path = models.CharField(max_length=255)
+    granularity = models.CharField(max_length=10, default="D")
+    exog_columns = models.JSONField(blank=True, null=True)
+    exog_rules = models.JSONField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -26,12 +26,7 @@ class PredictionModel(models.Model):
     def __str__(self):
         return f"{self.forecast.name} - {self.name} ({self.granularity})"
 
-    def save(self, *args, **kwargs):
-        from .utils import generate_and_save_predictions
-        is_new = self.pk is None
-        super().save(*args, **kwargs)
-        if is_new:
-             generate_and_save_predictions(self.id)
+    # O método save() que gerava previsões automaticamente foi removido.
 
 class Prediction(models.Model):
     model = models.ForeignKey(
