@@ -1,5 +1,3 @@
-# predictions/models.py
-
 from django.db import models
 
 class Forecast(models.Model):
@@ -26,7 +24,6 @@ class PredictionModel(models.Model):
     def __str__(self):
         return f"{self.forecast.name} - {self.name} ({self.granularity})"
 
-    # O método save() que gerava previsões automaticamente foi removido.
 
 class Prediction(models.Model):
     model = models.ForeignKey(

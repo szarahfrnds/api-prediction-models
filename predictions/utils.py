@@ -22,24 +22,20 @@ def prepare_future_exog(
 
     exog_df = pd.DataFrame(index=future_dates)
 
-    # --- Features para o modelo LGBM (e outros baseados em tempo) ---
     exog_df['mes'] = exog_df.index.month
     exog_df['dia_do_mes'] = exog_df.index.day
     exog_df['semana_do_ano'] = exog_df.index.isocalendar().week.astype(int)
     exog_df['eh_fim_de_semana'] = (exog_df.index.dayofweek >= 5).astype(int)
     exog_df['eh_horario_almoco'] = ((exog_df.index.hour >= 12) & (exog_df.index.hour <= 14)).astype(int)
 
-    # Features cíclicas (Sin/Cos)
     exog_df['hora_sin'] = np.sin(2 * np.pi * exog_df.index.hour / 24)
     exog_df['hora_cos'] = np.cos(2 * np.pi * exog_df.index.hour / 24)
     exog_df['dia_semana_sin'] = np.sin(2 * np.pi * exog_df.index.dayofweek / 7)
     exog_df['dia_semana_cos'] = np.cos(2 * np.pi * exog_df.index.dayofweek / 7)
 
-    # --- Features para o modelo SARIMAX (dias da semana) ---
     for i in range(7):
         exog_df[f'weekday_{i}'] = (exog_df.index.dayofweek == i).astype(int)
 
-    # --- Features baseadas em regras (feriados) ---
     if exog_rules:
         for col, rule in exog_rules.items():
             if col not in exog_df.columns:
@@ -49,44 +45,36 @@ def prepare_future_exog(
                 is_rule_date = pd.Series(exog_df.index.date).isin(rule_dates)
                 exog_df.loc[is_rule_date.values, col] = 1
 
-    # Garante que colunas não geradas (como as defasadas) existam com valor 0
     for col in exog_columns:
         if col not in exog_df.columns:
             exog_df[col] = 0
 
-    # Retorna o DataFrame apenas com as colunas que o modelo espera, na ordem correta
     return exog_df[exog_columns]
 
 
 def generate_single_prediction(model_id: int, prediction_datetime: pd.Timestamp, external_features: dict = None) -> float:
-    """
-    Gera uma única previsão, aceitando features externas para sobrescrever os valores padrão.
-    """
+
     model_obj = PredictionModel.objects.get(id=model_id)
     model = joblib.load(model_obj.path)
 
     future_date = pd.DatetimeIndex([prediction_datetime])
 
-    # 1. Gera o DataFrame com todas as features que o sistema conhece
     exog_df = prepare_future_exog(
         future_date, model_obj.exog_columns, model_obj.exog_rules
     )
 
-    # 2. Sobrescreve as colunas com os valores externos fornecidos (se houver)
     if external_features:
         for feature_name, value in external_features.items():
             if feature_name in exog_df.columns:
                 exog_df[feature_name] = value
 
-    # Garante a ordem correta das colunas que o modelo foi treinado
     ordered_exog_df = exog_df[model_obj.exog_columns]
 
-    # 3. Faz a previsão usando o método apropriado do modelo
-    if hasattr(model, 'predict'):
-        prediction_value = model.predict(ordered_exog_df)[0]
-    elif hasattr(model, 'get_forecast'):
+    if hasattr(model, 'get_forecast'):
         forecast = model.get_forecast(steps=1, exog=ordered_exog_df)
         prediction_value = forecast.predicted_mean.iloc[0]
+    elif hasattr(model, 'predict'):
+        prediction_value = model.predict(ordered_exog_df)[0]
     else:
         raise TypeError("O modelo não é compatível com os métodos 'predict' ou 'get_forecast'.")
 

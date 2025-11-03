@@ -70,6 +70,12 @@ class OnDemandPredictionView(APIView):
             prediction_value = generate_single_prediction(model.id, prediction_datetime, external_features)
         except Exception as e:
             return Response({"error": f"Erro ao gerar a previsão: {str(e)}"}, status=500)
+        
+        Prediction.objects.update_or_create(
+            model=model,
+            prediction_datetime=prediction_datetime,
+            defaults={'value': prediction_value}
+        )
 
         # 5. Retornar a resposta com sucesso
         return Response({
