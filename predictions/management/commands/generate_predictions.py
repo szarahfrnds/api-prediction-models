@@ -3,7 +3,6 @@ from predictions.models import PredictionModel
 from predictions.utils import generate_and_save_predictions
 
 class Command(BaseCommand):
-    help = 'Gera previsões de todos os modelos e salva no banco de dados.'
 
     def handle(self, *args, **kwargs):
         self.stdout.write(self.style.NOTICE("Iniciando o processo de geração de previsões..."))

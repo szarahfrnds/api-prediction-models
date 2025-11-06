@@ -78,9 +78,6 @@ def generate_single_prediction(model_id: int, prediction_datetime: pd.Timestamp,
 
 
 def generate_and_save_predictions(model_id: int, prediction_days: int = 64):
-    """
-    Gera previsões em lote e salva no banco de dados. Usado pelo comando de gerenciamento.
-    """
     from .models import PredictionModel, Prediction
 
     try:
@@ -101,8 +98,6 @@ def generate_and_save_predictions(model_id: int, prediction_days: int = 64):
         start=start_date, periods=prediction_days, freq=freq
     )
 
-    # Esta abordagem preencherá features defasadas com 0, o que é uma limitação
-    # da previsão em lote para modelos complexos.
     exog_df = prepare_future_exog(
         future_dates, model_obj.exog_columns, model_obj.exog_rules
     )
@@ -130,4 +125,3 @@ def generate_and_save_predictions(model_id: int, prediction_days: int = 64):
         ]
         Prediction.objects.bulk_create(predictions_to_create, ignore_conflicts=True)
 
-    print(f"Previsões em lote para o modelo '{model_obj.name}' geradas e salvas com sucesso.")

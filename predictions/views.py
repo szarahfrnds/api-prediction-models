@@ -111,9 +111,6 @@ class ForecastPredictionsView(APIView):
 
 
 class PredictionListView(APIView):
-    """
-    (Legado) Retorna uma lista de previsões, opcionalmente filtrada por uma data específica.
-    """
     @swagger_auto_schema(
         manual_parameters=[
             openapi.Parameter(
@@ -141,9 +138,6 @@ class PredictionListView(APIView):
 
 
 def get_external_telemetry_sum(entity_id: str, end_datetime_utc: pd.Timestamp) -> float:
-    """
-    Conecta-se ao banco DB_DIOS_SQL e "aglutina" (soma) os dados de telemetria.
-    """
     SERVER = "CA0VSQL09.br.bosch.com,56482"
     DATABASE = "DB_DIOS_SQL"
     USERNAME = "FCM"
@@ -173,7 +167,6 @@ def get_external_telemetry_sum(entity_id: str, end_datetime_utc: pd.Timestamp) -
             return 0.0
             
     except Exception as e:
-        print(f"Erro ao buscar dado no DB externo para {entity_id} em {end_datetime_utc}: {e}")
         raise Exception(f"Falha ao buscar dado histórico no DB_DIOS_SQL: {e}")
     finally:
         if conn:
