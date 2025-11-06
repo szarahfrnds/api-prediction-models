@@ -3,6 +3,7 @@ from django.db import models
 class Forecast(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True, null=True)
+    entity_id = models.CharField(max_length=255, blank=True, null=True, help_text="O ID da entidade no banco de telemetria externo (ex: DB_DIOS_SQL)")
 
     def __str__(self):
         return self.name

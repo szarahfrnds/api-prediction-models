@@ -13,10 +13,6 @@ def prepare_future_exog(
     exog_columns: List[str],
     exog_rules: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
-    """
-    Cria um DataFrame de features exógenas para datas futuras.
-    Esta função é agnóstica ao modelo e gera todas as features que conhece.
-    """
     if not exog_columns:
         return pd.DataFrame()
 
