@@ -9,9 +9,23 @@ class Forecast(models.Model):
         return self.name
 
 class PredictionModel(models.Model):
+    MODEL_TYPE_CHOICES = [
+        ('prophet', 'Prophet'),
+        ('lgbm', 'LightGBM'),
+        ('sarimax', 'SARIMAX'),
+        ('outro', 'Outro'), 
+    ]
+
     forecast = models.ForeignKey(
         Forecast, on_delete=models.CASCADE, related_name="models"
     )
+
+    model_type = models.CharField(
+        max_length=50, 
+        choices=MODEL_TYPE_CHOICES, 
+        default='prophet'
+    )
+    
     name = models.CharField(max_length=100)
     path = models.CharField(max_length=255)
     granularity = models.CharField(max_length=10, default="D")

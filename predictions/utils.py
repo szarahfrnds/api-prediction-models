@@ -1,127 +1,71 @@
+# Em predictions/utils.py
+import os
 import joblib
 import pandas as pd
-import numpy as np
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from prophet.serialize import model_from_json
+from django.conf import settings
+from django.core.cache import cache
 
-from django.db import transaction
-from django.core.exceptions import ObjectDoesNotExist
-from .models import PredictionModel, Prediction
+BASE_DIR = settings.BASE_DIR
 
-def prepare_future_exog(
-    future_dates: pd.DatetimeIndex,
-    exog_columns: List[str],
-    exog_rules: Optional[Dict[str, Any]] = None,
-) -> pd.DataFrame:
-    if not exog_columns:
-        return pd.DataFrame()
+def load_model_from_path(model_path, model_type):
+    """
+    Carrega um modelo (.pkl ou .json) do disco.
+    model_path: O caminho que você digitou no Admin (ex: 'predictions/model/meu_modelo.pkl')
+    model_type: O tipo que você SELECIONOU no Admin (ex: 'prophet', 'lgbm')
+    """
+    full_path = os.path.join(BASE_DIR, model_path)
+    
+    if not os.path.exists(full_path):
+        raise FileNotFoundError(f"Arquivo de modelo não encontrado em: {full_path}")
 
-    exog_df = pd.DataFrame(index=future_dates)
-
-    exog_df['mes'] = exog_df.index.month
-    exog_df['dia_do_mes'] = exog_df.index.day
-    exog_df['semana_do_ano'] = exog_df.index.isocalendar().week.astype(int)
-    exog_df['eh_fim_de_semana'] = (exog_df.index.dayofweek >= 5).astype(int)
-    exog_df['eh_horario_almoco'] = ((exog_df.index.hour >= 12) & (exog_df.index.hour <= 14)).astype(int)
-
-    exog_df['hora_sin'] = np.sin(2 * np.pi * exog_df.index.hour / 24)
-    exog_df['hora_cos'] = np.cos(2 * np.pi * exog_df.index.hour / 24)
-    exog_df['dia_semana_sin'] = np.sin(2 * np.pi * exog_df.index.dayofweek / 7)
-    exog_df['dia_semana_cos'] = np.cos(2 * np.pi * exog_df.index.dayofweek / 7)
-
-    for i in range(7):
-        exog_df[f'weekday_{i}'] = (exog_df.index.dayofweek == i).astype(int)
-
-    if exog_rules:
-        for col, rule in exog_rules.items():
-            if col not in exog_df.columns:
-                exog_df[col] = 0
-            if isinstance(rule, list):
-                rule_dates = pd.to_datetime(rule).date
-                is_rule_date = pd.Series(exog_df.index.date).isin(rule_dates)
-                exog_df.loc[is_rule_date.values, col] = 1
-
-    for col in exog_columns:
-        if col not in exog_df.columns:
-            exog_df[col] = 0
-
-    return exog_df[exog_columns]
-
-
-def generate_single_prediction(model_id: int, prediction_datetime: pd.Timestamp, external_features: dict = None) -> float:
-
-    model_obj = PredictionModel.objects.get(id=model_id)
-    model = joblib.load(model_obj.path)
-
-    future_date = pd.DatetimeIndex([prediction_datetime])
-
-    exog_df = prepare_future_exog(
-        future_date, model_obj.exog_columns, model_obj.exog_rules
-    )
-
-    if external_features:
-        for feature_name, value in external_features.items():
-            if feature_name in exog_df.columns:
-                exog_df[feature_name] = value
-
-    ordered_exog_df = exog_df[model_obj.exog_columns]
-
-    if hasattr(model, 'get_forecast'):
-        forecast = model.get_forecast(steps=1, exog=ordered_exog_df)
-        prediction_value = forecast.predicted_mean.iloc[0]
-    elif hasattr(model, 'predict'):
-        prediction_value = model.predict(ordered_exog_df)[0]
+    # DECISÃO LIMPA: O tipo vem do banco, não do nome do arquivo
+    if model_type == 'prophet' and full_path.endswith('.json'):
+        print(f"Carregando modelo Prophet de: {full_path}")
+        with open(full_path, 'r') as f:
+            model = model_from_json(f.read())
+        return model
+        
+    elif model_type in ['lgbm', 'sarimax'] and full_path.endswith('.pkl'):
+        print(f"Carregando modelo PKL (Joblib) de: {full_path}")
+        model = joblib.load(full_path)
+        return model
+        
     else:
-        raise TypeError("O modelo não é compatível com os métodos 'predict' ou 'get_forecast'.")
+        raise TypeError(f"Tipo de modelo '{model_type}' (do Admin) não é compatível com a extensão do arquivo '{full_path}'.")
 
-    return float(np.round(prediction_value, 2))
+def get_model_by_id(model_id):
+    """
+    Busca o modelo no cache ou o carrega do banco de dados (via Admin).
+    """
+    from .models import PredictionModel  
+    
+    cache_key = f"prediction_model_{model_id}"
+    
+    cached_model = cache.get(cache_key)
+    if cached_model:
+        print(f"Carregando modelo ID {model_id} do cache.")
+        return cached_model
 
-
-def generate_and_save_predictions(model_id: int, prediction_days: int = 64):
-    from .models import PredictionModel, Prediction
-
+    print(f"Modelo ID {model_id} não no cache. Carregando do banco...")
     try:
-        model_obj = PredictionModel.objects.get(id=model_id)
-    except ObjectDoesNotExist:
-        print(f"Erro: Modelo com ID {model_id} não encontrado.")
-        return
+        model_db = PredictionModel.objects.get(id=model_id)
+        
+        # --- A LÓGICA CORRETA ---
+        model_path = model_db.path       # O caminho do arquivo (CharField)
+        model_type = model_db.model_type # O tipo do modelo (Choices)
+        # --- FIM DA LÓGICA ---
 
-    try:
-        model = joblib.load(model_obj.path)
+        modelo_carregado = load_model_from_path(model_path, model_type)
+
+        if modelo_carregado:
+            print(f"Modelo ID {model_id} ('{model_type}') carregado e salvo no cache.")
+            cache.set(cache_key, modelo_carregado, timeout=None) 
+            return modelo_carregado
+            
+    except PredictionModel.DoesNotExist:
+        print(f"ERRO: Nenhum PredictionModel com ID {model_id} foi cadastrado no Admin.")
+        return None
     except Exception as e:
-        print(f"Erro ao carregar o modelo: {e}")
-        return
-
-    freq = model_obj.granularity.lower()
-    start_date = datetime.now() + timedelta(days=1)
-    future_dates = pd.date_range(
-        start=start_date, periods=prediction_days, freq=freq
-    )
-
-    exog_df = prepare_future_exog(
-        future_dates, model_obj.exog_columns, model_obj.exog_rules
-    )
-
-    try:
-        if hasattr(model, 'get_forecast'):
-            forecast = model.get_forecast(steps=prediction_days, exog=exog_df)
-            predictions = forecast.predicted_mean
-        elif hasattr(model, 'predict'):
-            predictions = model.predict(exog_df)
-        else:
-            raise TypeError("O modelo não é compatível.")
-    except Exception as e:
-        print(f"Erro durante a geração da previsão em lote: {e}")
-        return
-
-    with transaction.atomic():
-        Prediction.objects.filter(model=model_obj, prediction_datetime__gte=start_date).delete()
-        predictions_to_create = [
-            Prediction(
-                model=model_obj,
-                prediction_datetime=dt,
-                value=float(np.round(value, 2))
-            ) for dt, value in zip(future_dates, predictions)
-        ]
-        Prediction.objects.bulk_create(predictions_to_create, ignore_conflicts=True)
-
+        print(f"ERRO ao carregar o modelo ID {model_id}: {e}")
+        return None
