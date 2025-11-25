@@ -46,10 +46,8 @@ def get_model_by_id(model_id):
     try:
         model_db = PredictionModel.objects.get(id=model_id)
         
-        # --- A LÓGICA CORRETA ---
-        model_path = model_db.path       # O caminho do arquivo (CharField)
-        model_type = model_db.model_type # O tipo do modelo (Choices)
-        # --- FIM DA LÓGICA ---
+        model_path = model_db.path       
+        model_type = model_db.model_type 
 
         modelo_carregado = load_model_from_path(model_path, model_type)
 
@@ -65,7 +63,6 @@ def get_model_by_id(model_id):
         print(f"ERRO ao carregar o modelo ID {model_id}: {e}")
         return None
 
-# --- LÓGICA ESPECÍFICA DO XGBOOST ---
 def criar_features_xgboost(df_input):
     """
     Recria as features exatas que o modelo XGBoost aprendeu no treinamento.
@@ -75,17 +72,14 @@ def criar_features_xgboost(df_input):
     if not np.issubdtype(df['ds'].dtype, np.datetime64):
         df['ds'] = pd.to_datetime(df['ds'])
 
-    # 1. Extração Básica
     df['dia_semana'] = df['ds'].dt.dayofweek
     df['dia_mes'] = df['ds'].dt.day
     df['mes'] = df['ds'].dt.month
     df['ano'] = df['ds'].dt.year
     
-    # 2. Features Cíclicas
     df['mes_sin'] = np.sin(2 * np.pi * df['mes']/12)
     df['mes_cos'] = np.cos(2 * np.pi * df['mes']/12)
     
-    # 3. ONE-HOT ENCODING (Flags de Dias)
     df['is_segunda'] = (df['dia_semana'] == 0).astype(int)
     df['is_terca']   = (df['dia_semana'] == 1).astype(int)
     df['is_quarta']  = (df['dia_semana'] == 2).astype(int)
@@ -94,7 +88,6 @@ def criar_features_xgboost(df_input):
     df['is_sabado']  = (df['dia_semana'] == 5).astype(int)
     df['is_domingo'] = (df['dia_semana'] == 6).astype(int)
     
-    # 4. Feriados (Hardcoded por segurança)
     feriados = [
         '2024-01-01', '2024-02-12', '2024-02-13', '2024-03-29', '2024-04-21',
         '2024-05-01', '2024-05-30', '2024-09-07', '2024-10-12', '2024-11-02',
