@@ -13,6 +13,7 @@ class PredictionModel(models.Model):
         ('prophet', 'Prophet'),
         ('lgbm', 'LightGBM'),
         ('sarimax', 'SARIMAX'),
+        ('xgboost', 'XGBoost'), 
         ('outro', 'Outro'), 
     ]
 

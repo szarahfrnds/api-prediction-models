@@ -10,85 +10,52 @@ from .utils import get_model_by_id
 from django.shortcuts import get_object_or_404
 from django.db import transaction 
 import holidays
+from .utils import get_model_by_id, criar_features_xgboost 
+import numpy as np 
 
-# Imports do Swagger
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 
-# --- LÓGICA DE EXECUÇÃO DE CADA MODELO ---
-# (ASSINATURA PADRÃO: (model_db, modelo_executavel, ...))
+def run_xgboost_prediction(model_db, modelo_executavel, data_inicio, data_fim):
+    print(f"Rodando previsão XGBoost de {data_inicio} a {data_fim}...")
+    
+    future_dates = pd.date_range(start=data_inicio, end=data_fim, freq='D')
+    df_future = pd.DataFrame({'ds': future_dates})
+    print(f"Datas Geradas: {len(future_dates)} dias") # DEBUG
+    print(f"Exemplo: {future_dates}") # DEBUG   
+    
+    df_processed = criar_features_xgboost(df_future)
+    
+    features_ordenadas = [
+        'is_segunda', 'is_terca', 'is_quarta', 'is_quinta', 'is_sexta', 'is_sabado', 'is_domingo',
+        'mes_sin', 'mes_cos', 'dia_mes', 'ano', 'eh_feriado'
+    ]
+    
+    preds = modelo_executavel.predict(df_processed[features_ordenadas])
+    
+    df_final = df_future[['ds']].copy()
+    df_final.columns = ['prediction_datetime']
+    df_final['value'] = np.maximum(preds, 0).astype(int) 
+    
+    return df_final
 
 def run_prophet_prediction(model_db, modelo_executavel, data_inicio, data_fim):
-    """ Gera previsão para o Prophet """
-    granularidade = model_db.granularity # Pega 'H' ou 'D' do Admin
+    granularidade = model_db.granularity 
     if granularidade not in ['H', 'D']: 
          raise ValueError(f"Prophet com granularidade '{granularidade}' não suportada. Use 'H' ou 'D'.")
          
     future_df = pd.date_range(start=data_inicio, end=data_fim, freq=granularidade)
     future_df = pd.DataFrame({'ds': future_df})
     
-    # Adiciona features SÓ se for horário
     if granularidade == 'H':
         future_df['weekday'] = future_df['ds'].dt.dayofweek < 5
         future_df['weekend'] = future_df['ds'].dt.dayofweek >= 5
     
-    # O 'modelo_executavel' (o .json carregado) é usado aqui
     forecast = modelo_executavel.predict(future_df) 
     
     df_final = forecast[['ds', 'yhat']]
     df_final.columns = ['prediction_datetime', 'value'] 
     df_final['value'] = df_final['value'].clip(lower=0).round(2)
-    return df_final
-
-
-def run_sarimax_prediction(model_db, modelo_executavel, data_inicio, data_fim):
- 
-    granularidade = model_db.granularity 
-    print(f"Rodando previsão SARIMAX de {data_inicio} a {data_fim}...")
-    
-    exog_features = model_db.exog_columns
-    if not exog_features:
-        raise ValueError("SARIMAX falhou: O campo 'exog_columns' não está preenchido no Admin.")
-
-    future_df_range = pd.date_range(start=data_inicio, end=data_fim, freq=granularidade)
-    future_df = pd.DataFrame(index=future_df_range)
-
-    
-    print("AVISO: Criando feature 'IsHolidayOrBridge' apenas como 'IsHoliday'.")
-    br_holidays = holidays.Brazil(years=[future_df_range.year.min(), future_df_range.year.max()])
-    
- 
-    is_holiday = pd.Series(future_df.index.date, index=future_df.index).isin(br_holidays) 
-
-    future_df['IsHolidayOrBridge'] = is_holiday.astype(int)
-
-    day_of_week = future_df.index.dayofweek 
-    future_df['DiaSemana_Segunda'] = (day_of_week == 0).astype(int)
-    future_df['DiaSemana_Terca']   = (day_of_week == 1).astype(int)
-    future_df['DiaSemana_Quarta']  = (day_of_week == 2).astype(int)
-    future_df['DiaSemana_Quinta']  = (day_of_week == 3).astype(int)
-    future_df['DiaSemana_Sexta']   = (day_of_week == 4).astype(int)
-    future_df['DiaSemana_Sabado']  = (day_of_week == 5).astype(int)
-    future_df['DiaSemana_Domingo'] = (day_of_week == 6).astype(int)
-    
-    try:
-        future_exog_df = future_df[exog_features] 
-    except KeyError as e:
-        raise ValueError(f"SARIMAX falhou: A feature {e} está em 'exog_columns', mas não foi criada na função 'run_sarimax_prediction'.")
-
-    n_periods = len(future_exog_df)
-
-    forecast_series = modelo_executavel.get_forecast(
-        steps=n_periods,
-        exog=future_exog_df
-    ).predicted_mean
-    
-    df_final = forecast_series.to_frame(name='value')
-    df_final.index = future_exog_df.index  
-    df_final = df_final.reset_index().rename(columns={'index': 'prediction_datetime'})
-    df_final['value'] = df_final['value'].clip(lower=0).round(2)
-    
-    print("Previsão SARIMAX gerada com sucesso.")
     return df_final
 
 
@@ -100,12 +67,7 @@ class ModelListView(ListAPIView):
     queryset = PredictionModel.objects.all()
     serializer_class = PredictionModelSerializer
 
-# --- VIEW DE GERAÇÃO (O POST) ---
 class GeneratePredictionView(APIView):
-    """
-    POST /api/predict/
-    Gera uma nova previsão sob demanda e a salva no banco de dados.
-    """
     @swagger_auto_schema(
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
@@ -120,29 +82,23 @@ class GeneratePredictionView(APIView):
     )
     @transaction.atomic 
     def post(self, request, *args, **kwargs):
-        # 1. Pega os parâmetros do front-end
         model_id = request.data.get('model_id') 
-        data_inicio_str = request.data.get('data_inicio') # Pegar como string
-        data_fim_str = request.data.get('data_fim')     # Pegar como string
+        data_inicio_str = request.data.get('data_inicio') 
+        data_fim_str = request.data.get('data_fim')     
 
         if not all([model_id, data_inicio_str, data_fim_str]):
             return Response({"erro": "model_id, data_inicio, data_fim são obrigatórios."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # --- [INÍCIO DA CORREÇÃO DE FUSO HORÁRIO] ---
         try:
-            # 1. Converte a string (aware, em UTC/Z) para um objeto datetime (aware)
             data_inicio_utc = pd.to_datetime(data_inicio_str)
             data_fim_utc = pd.to_datetime(data_fim_str)
             
-            # 2. Converte do fuso UTC para o fuso local (onde o modelo foi treinado)
-            # (Se seu servidor ou dados de treino não são de SP, mude esta string)
+
             fuso_local = 'America/Sao_Paulo' 
             data_inicio_local_aware = data_inicio_utc.tz_convert(fuso_local)
             data_fim_local_aware = data_fim_utc.tz_convert(fuso_local)
 
-            # 3. Remove a informação de fuso (torna "naive")
-            # Agora a data está no horário de SP e "ingênua", 
-            # exatamente como o modelo espera.
+          
             data_inicio_naive = data_inicio_local_aware.replace(tzinfo=None)
             data_fim_naive = data_fim_local_aware.replace(tzinfo=None)
 
@@ -151,15 +107,12 @@ class GeneratePredictionView(APIView):
 
         except Exception as e:
             return Response({"erro": f"Formato de data inválido. Use ISO 8601 (...T00:00:00Z). Erro: {e}"}, status=status.HTTP_400_BAD_REQUEST)
-        # --- [FIM DA CORREÇÃO DE FUSO HORÁRIO] ---
 
-        # 2. Busca o registro do modelo no banco
         try:
             model_db = PredictionModel.objects.get(id=model_id)
         except PredictionModel.DoesNotExist:
             return Response({"erro": f"PredictionModel com ID {model_id} não encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
-        # 3. Carrega o modelo (do cache ou do disco)
         modelo_executavel = get_model_by_id(model_id)
         if modelo_executavel is None:
             return Response({"erro": f"Modelo ID {model_id} falhou ao carregar. Verifique os logs."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -168,20 +121,16 @@ class GeneratePredictionView(APIView):
         df_previsao = None
         
         try:
-            # 4. Passa os valores NAIVE (convertidos) para as funções
             if model_type == 'prophet':
                 df_previsao = run_prophet_prediction(model_db, modelo_executavel, data_inicio_naive, data_fim_naive)
-            elif model_type == 'lgbm':
-                df_previsao = run_lgbm_prediction(model_db, modelo_executavel, data_inicio_naive, data_fim_naive)
-            elif model_type == 'sarimax':
-                df_previsao = run_sarimax_prediction(model_db, modelo_executavel, data_inicio_naive, data_fim_naive)
+            elif model_type == 'xgboost':
+                df_previsao = run_xgboost_prediction(model_db, modelo_executavel, data_inicio_naive, data_fim_naive)
             else:
                 return Response({"erro": f"Tipo de modelo '{model_type}' não suportado pelo código."}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             print(f"ERRO AO RODAR PREVISÃO: {e}")
             return Response({"erro": f"Erro ao rodar previsão: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # 5. Salva no banco (o seu fluxo POST -> GET)
         previsoes_para_salvar = []
         for index, row in df_previsao.iterrows():
             previsoes_para_salvar.append(

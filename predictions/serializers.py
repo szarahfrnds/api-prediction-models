@@ -17,11 +17,8 @@ class PredictionSerializer(serializers.ModelSerializer):
         model = Prediction
         fields = '__all__'
 
-# --- ADICIONE ESTA NOVA CLASSE ---
 class PredictionModelSerializer(serializers.ModelSerializer):
-    """
-    Serializer para o "catálogo" de modelos cadastrados.
-    """
+  
     forecast_name = serializers.CharField(source='forecast.name', read_only=True)
     
     class Meta:
