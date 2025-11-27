@@ -17,13 +17,28 @@ from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 
 
-def parse_and_validate_dates(start_str, end_str):
-    """Converte strings ISO para datetime naive (sem fuso) no horário local."""
+def parse_and_validate_dates(start_str, end_str, granularity='D'):
+    """
+    Converte strings ISO para datetime.
+    Se granularity='D' (Diário): Zera o horário (Normalize) para garantir dia cheio.
+    Se granularity='H' (Horário): Mantém o horário exato.
+    Aplica o shift de +3h para corrigir o fuso no Front-end.
+    """
     try:
         fuso_local = 'America/Sao_Paulo'
         
-        d_start = pd.to_datetime(start_str).tz_convert(fuso_local).replace(tzinfo=None)
-        d_end = pd.to_datetime(end_str).tz_convert(fuso_local).replace(tzinfo=None)
+        d_start = pd.to_datetime(start_str).tz_convert(fuso_local)
+        d_end = pd.to_datetime(end_str).tz_convert(fuso_local)
+
+        if granularity == 'D':
+            d_start = d_start.normalize()
+            d_end = d_end.normalize()
+
+        d_start = d_start + pd.Timedelta(hours=3)
+        d_end = d_end + pd.Timedelta(hours=3)
+
+        d_start = d_start.tz_localize(None)
+        d_end = d_end.tz_localize(None)
         
         if d_start > d_end:
             raise ValueError(f"Data Início ({d_start}) não pode ser maior que Data Fim ({d_end}).")
@@ -100,19 +115,27 @@ def run_xgboost_prediction(model_db, modelo_executavel, data_inicio, data_fim):
 def run_prophet_prediction(model_db, modelo_executavel, data_inicio, data_fim):
     granularidade = model_db.granularity 
     if granularidade not in ['H', 'D']: 
-         raise ValueError(f"Prophet com granularidade '{granularidade}' não suportada. Use 'H' ou 'D'.")
+         raise ValueError(f"Prophet com granularidade '{granularidade}' não suportada.")
          
+    # 1. Gerar Datas (UTC +3)
     future_df = pd.date_range(start=data_inicio, end=data_fim, freq=granularidade)
     future_df = pd.DataFrame({'ds': future_df})
     
+    # 2. AJUSTE DE FUSO PARA O MODELO
+    # O Prophet precisa receber a hora local (00:00) para entender feriados e sazonalidade diária
+    df_para_modelo = future_df.copy()
+    df_para_modelo['ds'] = df_para_modelo['ds'] - pd.Timedelta(hours=3)
+    
     if granularidade == 'H':
-        future_df['weekday'] = future_df['ds'].dt.dayofweek < 5
-        future_df['weekend'] = future_df['ds'].dt.dayofweek >= 5
+        df_para_modelo['weekday'] = df_para_modelo['ds'].dt.dayofweek < 5
+        df_para_modelo['weekend'] = df_para_modelo['ds'].dt.dayofweek >= 5
     
-    forecast = modelo_executavel.predict(future_df) 
+    forecast = modelo_executavel.predict(df_para_modelo) 
     
-    df_final = forecast[['ds', 'yhat']]
-    df_final.columns = ['prediction_datetime', 'value'] 
+    df_final = pd.DataFrame()
+    df_final['prediction_datetime'] = future_df['ds'] 
+    df_final['value'] = forecast['yhat'].values       
+    
     df_final['value'] = df_final['value'].clip(lower=0).round(2)
     return df_final
 
@@ -147,11 +170,13 @@ class GeneratePredictionView(APIView):
             end_str = request.data.get('data_fim')
             
             if not all([model_id, start_str, end_str]):
-                return Response({"erro": "Campos model_id, data_inicio e data_fim são obrigatórios."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"erro": "Campos obrigatórios faltando."}, status=status.HTTP_400_BAD_REQUEST)
 
-            start_naive, end_naive = parse_and_validate_dates(start_str, end_str)
-            
+            # 1. Carregar modelo PRIMEIRO para saber a granularidade
             model_db = PredictionModel.objects.get(id=model_id)
+            
+            # 2. Passar a granularidade para a função de datas
+            start_naive, end_naive = parse_and_validate_dates(start_str, end_str, granularity=model_db.granularity)
             
             qtd = process_prediction_task(model_db, start_naive, end_naive)
             
@@ -186,7 +211,6 @@ class ForecastResultView(ListAPIView):
 
     def get_queryset(self):
         forecast_id = self.kwargs.get('forecast_id')
-        
         model_id = self.request.query_params.get('model_id')
         start_str = self.request.query_params.get('start_date')
         end_str = self.request.query_params.get('end_date')
@@ -196,34 +220,45 @@ class ForecastResultView(ListAPIView):
         if model_id:
             queryset = queryset.filter(model_id=model_id)
 
-        if start_str and end_str:
+        if start_str and end_str and model_id:
             try:
-                start_naive, end_naive = parse_and_validate_dates(start_str, end_str)
+                # 1. Carregar modelo para pegar granularidade
+                model_db = PredictionModel.objects.get(id=model_id)
                 
+                # 2. Validar datas respeitando a granularidade
+                start_naive, end_naive = parse_and_validate_dates(start_str, end_str, granularity=model_db.granularity)
+                
+                # 3. Filtrar queryset
                 queryset = queryset.filter(
                     prediction_datetime__gte=start_naive,
                     prediction_datetime__lte=end_naive
                 )
-              
-                if model_id:
-                    count_existente = queryset.count()
-                    
-                    dias_pedidos = (end_naive - start_naive).days + 1
-                    
-                    if count_existente < dias_pedidos:
-                        print(f"⚠️ LAZY LOAD: Faltam dados (Tem {count_existente}, Precisa {dias_pedidos}). Gerando...")
-                        
-                        model_db = PredictionModel.objects.get(id=model_id)
-                        process_prediction_task(model_db, start_naive, end_naive)
-                        
-                        queryset = Prediction.objects.filter(
-                            model__forecast_id=forecast_id,
-                            model_id=model_id,
-                            prediction_datetime__gte=start_naive,
-                            prediction_datetime__lte=end_naive
-                        )
-            except Exception as e:
+
+                # 4. Lazy Loading
+                count_existente = queryset.count()
                 
+                # Cálculo de expectativa de dados
+                if model_db.granularity == 'H':
+                    # Se for horário, espera-se 24 dados por dia aprox.
+                    horas_totais = (end_naive - start_naive).total_seconds() / 3600
+                    dados_esperados = int(horas_totais) 
+                else:
+                    # Se for diário
+                    dados_esperados = (end_naive - start_naive).days + 1
+                
+                # Margem de segurança (se tiver menos de 50% do esperado, gera)
+                if count_existente < dados_esperados:
+                    print(f"⚠️ LAZY LOAD: Faltam dados (Tem {count_existente}, Precisa ~{dados_esperados}). Gerando...")
+                    process_prediction_task(model_db, start_naive, end_naive)
+                    
+                    # Recarrega queryset
+                    queryset = Prediction.objects.filter(
+                        model__forecast_id=forecast_id,
+                        model_id=model_id,
+                        prediction_datetime__gte=start_naive,
+                        prediction_datetime__lte=end_naive
+                    )
+            except Exception as e:
                 print(f"Erro no Lazy Loading: {e}")
                 pass
         
